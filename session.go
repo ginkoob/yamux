@@ -58,7 +58,8 @@ type Session struct {
 
 	// acceptCh is used to pass ready streams to the client
 	acceptCh chan *Stream
-
+	// goAwayCh is used to notify AcceptStream of GoAway requests
+	goAwayCh chan struct{}
 	// sendCh is used to mark a stream as ready to send,
 	// or to send a header out directly.
 	sendCh chan sendReady
@@ -100,6 +101,7 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 	if client {
 		s.nextStreamID = 1
 	} else {
+		s.goAwayCh = make(chan struct{}, 1)
 		s.nextStreamID = 2
 	}
 	go s.recv()
@@ -200,6 +202,8 @@ func (s *Session) AcceptStream() (*Stream, error) {
 		return stream, nil
 	case <-s.shutdownCh:
 		return nil, s.shutdownErr
+	case <- s.goAwayCh:
+		return nil, ErrRemoteGoAway
 	}
 }
 
@@ -526,6 +530,10 @@ func (s *Session) handleGoAway(hdr header) error {
 	switch code {
 	case goAwayNormal:
 		atomic.SwapInt32(&s.remoteGoAway, 1)
+		select{
+		case s.goAwayCh <- struct{}{}:
+		default:
+		}
 	case goAwayProtoErr:
 		s.logger.Printf("[ERR] yamux: received protocol error go away")
 		return fmt.Errorf("yamux protocol error")
